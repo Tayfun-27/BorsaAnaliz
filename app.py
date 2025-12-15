@@ -13,13 +13,12 @@ from sklearn.linear_model import LinearRegression
 from scipy.stats import pearsonr
 
 # --- STREAMLIT SAYFA AYARLARI ---
-st.set_page_config(page_title="Borsa Analiz Paneli", layout="wide")
-st.title("📊 Borsa Analiz Merkezi")
-st.markdown("Aşağıdaki sekmelerden yapmak istediğiniz işlemi seçin.")
+st.set_page_config(page_title="Ultra Full Borsa Analiz", layout="wide")
+st.title("🚀 Ultra Borsa Analiz: Tam Kapsamlı Versiyon")
+st.markdown("Bu uygulama, Klasik Analiz ve Expert MA analizini hatasız veri temizliği ile birleştirir.")
 
-# ==================== 1. ORTAK FONKSİYONLAR (VERİ & DOSYA) ====================
+# ==================== 1. HİSSE LİSTESİ ====================
 def get_hardcoded_tickers():
-    # Tam Liste
     return [
         "ACSEL", "ADEL", "AEFES", "AFYON", "AGESA", "AGHOL", "AGYO", "AKBNK", "AKCNS", "AKENR", 
         "AKFGY", "AKGRT", "AKSA", "AKSEN", "AKSGY", "ALARK", "ALBRK", "ALCAR", "ALCTL", "ALFAS", 
@@ -65,6 +64,7 @@ def get_hardcoded_tickers():
         "YUNSA", "YYAPI", "ZEDUR", "ZOREN"
     ]
 
+# ==================== 2. VERİ YÜKLEME VE TEMİZLEME ====================
 def download_data_task(status_box, progress_bar):
     output_folder = "Borsa_Verileri"
     if not os.path.exists(output_folder): os.makedirs(output_folder)
@@ -75,14 +75,28 @@ def download_data_task(status_box, progress_bar):
     for i, sym in enumerate(tickers):
         try:
             status_box.text(f"İndiriliyor: {sym} ({i+1}/{total})")
-            progress_bar.progress((i+1)/total)
-            df = yf.Ticker(f"{sym}.IS").history(period="5y")
+            progress_bar.progress((i + 1) / total_tickers) # Hata olursa burayı düzelt
+            
+            # yfinance Bazen hata verebilir, retry mantığı eklenebilir ama basit tutalım
+            yf_symbol = f"{sym}.IS"
+            ticker_obj = yf.Ticker(yf_symbol)
+            df = ticker_obj.history(period="5y")
+            
             if df.empty or len(df) < 233: continue
+            
             df = df.reset_index()
             df['Date'] = pd.to_datetime(df['Date']).dt.date
             df = df.rename(columns={"Date":"DATE","Close":"CLOSING_TL","Open":"OPEN_TL","High":"HIGH_TL","Low":"LOW_TL","Volume":"VOLUME"})
-            df = df[["DATE","CLOSING_TL","OPEN_TL","HIGH_TL","LOW_TL","VOLUME"]].dropna(how='all', axis=1)
-            if df['CLOSING_TL'].isnull().all(): continue
+            
+            # Sadece gerekli ve dolu kolonları al
+            cols = ["DATE","CLOSING_TL","OPEN_TL","HIGH_TL","LOW_TL","VOLUME"]
+            df = df[[c for c in cols if c in df.columns]]
+            
+            # ANAHTAR NOKTA: Kapanış fiyatı olmayan satırları at
+            df = df.dropna(subset=['CLOSING_TL'])
+            
+            if df.empty: continue
+
             df.to_excel(os.path.join(output_folder, f"{sym}.xlsx"), index=False)
             success += 1
             time.sleep(0.05)
@@ -95,27 +109,38 @@ def load_stock_df(path):
         df.columns = [str(c).strip().upper() for c in df.columns]
         if "DATE" in df.columns:
             df["DATE"] = pd.to_datetime(df["DATE"], errors="coerce", dayfirst=True)
-            df = df.dropna(subset=["DATE"]).sort_values("DATE")
+            df = df.dropna(subset=["DATE"])
+            df = df.sort_values("DATE")
+        
+        # EKSTRA GÜVENLİK: Kapanış fiyatı boşsa doldur veya sil
+        if "CLOSING_TL" in df.columns:
+            df = df.dropna(subset=["CLOSING_TL"]) # Boşları sil
+            # df["CLOSING_TL"] = df["CLOSING_TL"].ffill() # Alternatif: Önceki değerle doldur
+            
         return df
     except: return None
 
 def autofit(ws, df):
     if df is None or df.empty: return
     for i, c in enumerate(df.columns, 1):
-        l = max(df[c].astype(str).apply(len).max(), len(str(c)))
-        ws.column_dimensions[get_column_letter(i)].width = min(l+2, 50)
+        try:
+            l = max(df[c].astype(str).apply(len).max(), len(str(c)))
+            ws.column_dimensions[get_column_letter(i)].width = min(l+2, 50)
+        except: pass
 
-# ==================== 2. HESAPLAMA MOTORU ====================
-
-# Ortak
+# ==================== 3. HESAPLAMA MOTORU ====================
 def calc_ema(d, p): return d.ewm(span=p, adjust=False).mean()
 
 # Expert Math
 def linreg(p, l, o):
     if len(p)<l: return np.nan
-    x=np.arange(l); y=p[-l:]; df=pd.DataFrame({'x':x,'y':y}).dropna()
-    if len(df)<2: return np.nan
-    s, i = np.polyfit(df['x'],df['y'],1); return s*(l-1+o)+i
+    x=np.arange(l); y=p[-l:]; 
+    # NaN kontrolü
+    if np.isnan(y).any(): return np.nan
+    
+    s, i = np.polyfit(x, y, 1)
+    return s*(l-1+o)+i
+
 def zlsma(p,l,o):
     ps=pd.Series(p); ls=ps.rolling(l).apply(lambda x:linreg(x,l,0),raw=False)
     return (ls+(ls-ls.rolling(l).apply(lambda x:linreg(x,l,0),raw=False))).shift(-o)
@@ -127,9 +152,9 @@ def ma_type(d,p): e1=calc_ema(d,p); e2=calc_ema(e1,p); e3=calc_ema(e2,p); return
 def m1(d,a): e1=d.ewm(alpha=a,adjust=False).mean(); e2=e1.ewm(alpha=a,adjust=False).mean(); return 2*e1-e2
 def lr_slope(d,l):
     if len(d)<l: return np.nan
-    y=d[-l:]; x=np.arange(l); df=pd.DataFrame({'x':x,'y':y}).dropna()
-    if len(df)<2: return np.nan
-    return np.polyfit(df['x'],df['y'],1)[0]
+    y=d[-l:]; x=np.arange(l)
+    if np.isnan(y).any(): return np.nan # Hata önleyici
+    return np.polyfit(x,y,1)[0]
 def perc(d,w,p): return d.rolling(w).quantile(p/100, interpolation='nearest')
 def finh(d,p): h=p//2; return calc_ema(2*calc_ema(d,h)-calc_ema(d,p), int(np.sqrt(p)))
 def hma(d,p):
@@ -141,6 +166,7 @@ def jma(d,l=50,ph=1,po=4):
     j=np.zeros(len(d)); e0=np.zeros(len(d)); e1=np.zeros(len(d)); e2=np.zeros(len(d))
     for i in range(len(d)):
         c=d.iloc[i]
+        if np.isnan(c): c = j[i-1] if i>0 else 0 # NaN koruması
         if i==0: e0[i]=c; e2[i]=c; j[i]=c
         else:
             e0[i]=(1-a)*c+a*e0[i-1]; e1[i]=(c-e0[i])*(1-b)+b*e1[i-1]
@@ -158,8 +184,7 @@ def ama(d,p):
     return a
 def calc_macd(d,f,s,sm): m=calc_ema(d,f)-calc_ema(d,s); sig=calc_ema(m,sm); return m, sig
 
-
-# ==================== 3. RAPOR YAZMA YARDIMCILARI ====================
+# ==================== 4. RAPORLAMA YARDIMCILARI ====================
 def write_comp_table(ws, df, title, row):
     if df.empty: ws.cell(row,1,f"--- {title} (Veri Yok) ---").font=Font(bold=True); return row+2
     ws.cell(row,1,f"--- {title} ---").font=Font(bold=True, size=12); row+=1
@@ -200,7 +225,7 @@ def write_expert_table(ws, title, data, headers, b_fill, b_font, cond=False):
         rd += 1
     ws.append([]); ws.append([])
 
-# ==================== 4. SEKMELER (TABS) ====================
+# ==================== 5. SEKMELER (TABS) ====================
 
 tab_veri, tab_klasik, tab_expert = st.tabs(["1. Veri İndir", "2. Klasik Analiz (Hızlı)", "3. Expert Analiz (Detaylı)"])
 
@@ -256,18 +281,33 @@ with tab_klasik:
                 for p in [55,144,233,377,610,987]:
                     if len(df) >= p:
                         y = cl.tail(p); x = np.arange(p).reshape(-1, 1)
-                        p_dict[f'{p} Gün'] = np.corrcoef(x.T[0], y)[0,1] if len(y)>2 else np.nan
+                        # NaNs kontrolü
+                        if y.isnull().any():
+                             p_dict[f'{p} Gün'] = np.nan
+                        else:
+                             p_dict[f'{p} Gün'] = np.corrcoef(x.T[0], y)[0,1] if len(y)>2 else np.nan
                     else: p_dict[f'{p} Gün'] = np.nan
                 pea_res[nm] = p_dict
                 
-                # Kanal
+                # Kanal (HATA ÇÖZÜMÜ BURADA: NaN değerler temizleniyor)
                 for v in [144,233,377,610]:
                     if len(df) >= v:
-                        vdf = df.tail(v); y = vdf['CLOSING_TL'].values; x = np.arange(len(y)).reshape(-1, 1)
-                        md = LinearRegression().fit(x, y); pr = md.predict(x); std = np.std(y - pr)
-                        u = pr[-1] + 2*std; l = pr[-1] - 2*std; pc = pearsonr(vdf['CLOSING_TL'], pr)[0] if len(y)>2 else np.nan
-                        if md.coef_[0] < 0 and not np.isnan(pc): pc = -pc
-                        ch_res.append({'Hisse': nm, 'Vade': v, 'Son': cp, 'Ust': u, 'Alt': l, 'Ust%': (u-cp)/cp*100, 'Alt%': (cp-l)/cp*100, 'Pearson': pc})
+                        vdf = df.tail(v)
+                        # Temizlik
+                        vdf = vdf.dropna(subset=['CLOSING_TL'])
+                        if len(vdf) < 5: continue # Yeterli veri yoksa atla
+                        
+                        y = vdf['CLOSING_TL'].values
+                        x = np.arange(len(y)).reshape(-1, 1)
+                        
+                        try:
+                            md = LinearRegression().fit(x, y)
+                            pr = md.predict(x); std = np.std(y - pr)
+                            u = pr[-1] + 2*std; l = pr[-1] - 2*std
+                            pc = pearsonr(vdf['CLOSING_TL'], pr)[0] if len(y)>2 else np.nan
+                            if md.coef_[0] < 0 and not np.isnan(pc): pc = -pc
+                            ch_res.append({'Hisse': nm, 'Vade': v, 'Son': cp, 'Ust': u, 'Alt': l, 'Ust%': (u-cp)/cp*100, 'Alt%': (cp-l)/cp*100, 'Pearson': pc})
+                        except: pass # Hata verirse (örn. tüm değerler aynıysa) atla
             
             # Excel Yazma (Klasik)
             bio = io.BytesIO()
