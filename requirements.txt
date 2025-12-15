@@ -1,7 +1,8 @@
-streamlit
+yfinance>=0.2.50
 pandas
 numpy
-yfinance
+streamlit
 openpyxl
 scikit-learn
 scipy
+requests
