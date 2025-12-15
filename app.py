@@ -73,35 +73,27 @@ def download_data_task(status_box, progress_bar):
     tickers = get_hardcoded_tickers()
     total = len(tickers)
     success = 0
-    errors = [] # Hataları biriktirmek için
+    errors = []
     
-    # Yahoo Finance'in bizi engellememesi için 'Session' açıyoruz
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    })
+    # Session oluşturma kısmını SİLDİK. yfinance kendi halledecek.
 
-    status_box.info("İndirme işlemi başlatılıyor, lütfen bekleyin...")
+    status_box.info("İndirme işlemi başlatılıyor (YFinance Auto-Session)...")
     
     for i, sym in enumerate(tickers):
         try:
             status_box.text(f"İndiriliyor: {sym} ({i+1}/{total})")
             progress_bar.progress((i+1)/total)
             
-            # .IS ekleyerek sembolü oluştur
             yf_symbol = f"{sym}.IS"
             
-            # Session bilgisini kullanarak veriyi çekmeye çalışıyoruz
-            # Not: yfinance bazı sürümlerde session parametresini Ticker içinde kabul eder
-            ticker_obj = yf.Ticker(yf_symbol, session=session)
+            # session parametresini KALDIRDIK
+            ticker_obj = yf.Ticker(yf_symbol) 
             df = ticker_obj.history(period="5y")
             
-            # Veri kontrolü
             if df.empty:
-                # Boşsa bir de direkt download fonksiyonunu deneyelim (B planı)
-                df = yf.download(yf_symbol, period="5y", progress=False, session=session)
+                # session parametresini KALDIRDIK
+                df = yf.download(yf_symbol, period="5y", progress=False)
                 if df.empty:
-                    # errors.append(f"{sym}: Veri boş geldi.")
                     continue
 
             if len(df) < 233: 
@@ -109,47 +101,37 @@ def download_data_task(status_box, progress_bar):
             
             # Format düzenleme
             df = df.reset_index()
-            # Sütun isimlerini düzelt (Date bazen index gelir, bazen column)
             if 'Date' not in df.columns and 'Datetime' in df.columns:
                 df = df.rename(columns={'Datetime': 'Date'})
             
             df['Date'] = pd.to_datetime(df['Date']).dt.date
             
-            # Kolonları yeniden adlandır
             df = df.rename(columns={
                 "Date": "DATE", "Close": "CLOSING_TL", "Open": "OPEN_TL", 
                 "High": "HIGH_TL", "Low": "LOW_TL", "Volume": "VOLUME"
             })
             
-            # MultiIndex (Header sorunu) varsa düzelt
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
 
-            # Gerekli kolonları seç
             cols = ["DATE","CLOSING_TL","OPEN_TL","HIGH_TL","LOW_TL","VOLUME"]
-            # Sadece var olan kolonları al
             available_cols = [c for c in cols if c in df.columns]
             df = df[available_cols]
             
-            # Kapanış fiyatı olmayanları temizle
             df = df.dropna(subset=['CLOSING_TL'])
             
             if df.empty: continue
 
-            # Dosyayı kaydet
             df.to_excel(os.path.join(output_folder, f"{sym}.xlsx"), index=False)
             success += 1
             
-            # Çok hızlı istek atıp banlanmamak için minik bekleme
             time.sleep(0.1)
             
         except Exception as e:
-            # Hata olursa bunu listeye ekle ki sonra görelim
             errors.append(f"{sym} Hatası: {str(e)}")
             time.sleep(0.1)
             pass
             
-    # Döngü bittiğinde hata varsa ekrana yazdıralım (İlk 3 hatayı göster)
     if success == 0 and errors:
         st.error("Hiçbir hisse indirilemedi! Alınan örnek hatalar:")
         for err in errors[:3]:
